@@ -1,15 +1,39 @@
 import os
+import json
+from tqdm import tqdm
+
 from src.memory.nodes import MemoryNodesBuilder, MemoryNodeSingle
+from src.parser.llm import OpenAIWrapper
 
 
 class MemoryBuilder():
     def __init__(self,
                  memory_processed,
-                 memory_raw):
+                 memory_raw,
+                 events_embedding_store:str = "",
+                 semantic_knowledge_embedding_store:str = ""):
         self.memory_raw = memory_raw
         self.memory_nodes_dict = memory_processed['nodes'] if 'nodes' in memory_processed else {}
-        self.events = memory_processed['events'] if 'events' in memory_processed else []
+        self.events = memory_processed['events'] if 'events' in memory_processed else {}
         self.event_dict = memory_processed['event_dict'] if 'event_dict' in memory_processed else {}
+        self.semantic_knowledge = memory_processed['semantic_knowledge'] if 'semantic_knowledge' in memory_processed else {}
+
+
+        self.events_embedding_store_path = events_embedding_store
+        self.semantic_knowledge_embedding_store_path = semantic_knowledge_embedding_store
+        if os.path.exists(events_embedding_store) == False:
+            self.events_embedding_store = {}
+        else:
+            with open(events_embedding_store, "r") as f:
+                self.events_embedding_store = json.load(f)
+
+        if os.path.exists(semantic_knowledge_embedding_store) == False:
+            self.semantic_knowledge_embedding_store = {}
+        else:
+            with open(semantic_knowledge_embedding_store, "r") as f:
+                self.semantic_knowledge_embedding_store = json.load(f)
+
+        self.llm = OpenAIWrapper()
 
     def _update_memory(self, memory_nodes_dict, memory_raw):
         # check if the memory is processed and saved in the json
@@ -18,9 +42,12 @@ class MemoryBuilder():
         # convert json to memory nodes
         memory_nodes_builder = MemoryNodesBuilder(memory_nodes_dict=memory_nodes_dict)
         memory_nodes = memory_nodes_builder.get_nodes()
+        self.memory_nodes = memory_nodes
 
-        for memory_filename in memory_raw:
-            if memory_filename not in memory_nodes_dict:
+        print("Start building memory nodes...")
+        for memory_filename in tqdm(memory_raw):
+            all_filenames = [node['filename'] for node in memory_nodes_dict]
+            if memory_filename not in all_filenames:
                 # this step build an insular memory node, this node is not connected to other node yet.
                 new_node = self._build_memory_node(memory_raw[memory_filename])
                 # connect the new node with the existing memory
@@ -28,10 +55,111 @@ class MemoryBuilder():
 
     def _build_memory_node(self, memory_file_dict):
         new_node = MemoryNodeSingle(params=memory_file_dict, is_build=True)
-        pass
+        return new_node
 
     def _connect_memory_node(self, memory_nodes, new_node):
-        pass
+        # update shared events, update the event_dict, update the semantic memory
+        node_event = new_node.events
+        self._update_shared_events(new_node, node_event)
 
-    def build(self):
-        self._update_memory(self.memory_nodes_dict, self.memory_raw)
+        node_semantic_knowledge = new_node.semantic_knowledge
+        self._update_shared_semantic_knowledge(new_node, node_semantic_knowledge)
+
+        memory_nodes.append(new_node)
+        self.memory_nodes = memory_nodes
+
+        return
+    
+    def _update_shared_events(self, new_node, node_events):
+        # existing shared events {event_id: event_name, event_other_name, children_nodes: [node_ids]}
+        for new_event in node_events['events']:
+            # check if it can belong to an existing event in the shared events
+            merged = False
+            for event_id in self.events:
+                event_name = self.events[event_id]['name']
+                similarity, _ = self.llm.compare_similarity(new_event, event_name)
+                if eval(similarity) >= 7:
+                    if new_node.node_id not in self.events[event_id]['children_nodes']:
+                        self.events[event_id]['children_nodes'].append(new_node.node_id)
+                    merged = True
+                    break
+                    
+            if merged == True:
+                continue
+
+            # create new event in the shared events
+            new_event_id = len(self.events)
+            self.events[new_event_id] = {
+                'name': new_event,
+                'children_nodes': [new_node.node_id]
+            }
+            event_embedding = self.llm.calculate_embeddings(new_event)
+            self.events_embedding_store[new_event_id] = event_embedding
+
+            new_node.event_ids.append(new_event_id)
+
+        return
+    
+    def _update_shared_semantic_knowledge(self, new_node, node_semantic_knowledge):
+        # existing semantic knowledge {knowledge_id, knowledge_name, node_ids: [node_ids]}
+        node_knowledges = node_semantic_knowledge['semantic_knowledge']
+        for node_knowledge in node_knowledges:
+            merged = False
+            for knowledge_id in self.semantic_knowledge:
+                knowledge_name = self.semantic_knowledge[knowledge_id]['name']
+                # compute embeddings
+                # self.llm.calculate_embeddings(node_knowledge)
+
+                similarity, _ = self.llm.compare_similarity(node_knowledge, knowledge_name)
+                if eval(similarity) >= 7:
+                    if new_node.node_id not in self.semantic_knowledge[knowledge_id]['node_ids']:
+                        self.semantic_knowledge[knowledge_id]['node_ids'].append(new_node.node_id)
+                    merged = True
+                    break
+            if merged == True:
+                continue
+
+            # add the new knowledge to the semantic knowledge
+            new_knowledge_id = len(self.semantic_knowledge)
+            self.semantic_knowledge[new_knowledge_id] = {
+                'name': node_knowledge,
+                'node_ids': [new_node.node_id]
+            }
+            semantic_knowledge_embedding = self.llm.calculate_embeddings(node_knowledge)
+            self.semantic_knowledge_embedding_store[new_knowledge_id] = semantic_knowledge_embedding
+
+            new_node.knowledge_ids.append(new_knowledge_id)
+
+        return
+    
+    def _save(self, save_path=""):
+        # save stores
+        with open(self.events_embedding_store_path, "w") as f:
+            json.dump(self.events_embedding_store, f)
+        with open(self.semantic_knowledge_embedding_store_path, "w") as f:
+            json.dump(self.semantic_knowledge_embedding_store, f)
+
+        memory_processed = {}
+        nodes_list = []
+        for node in self.memory_nodes:
+            node_dict = node.get_dict()
+            nodes_list.append(node_dict)
+
+        memory_processed['nodes'] = nodes_list
+        memory_processed['events'] = self.events
+        memory_processed['semantic_knowledge'] = self.semantic_knowledge
+
+        with open(save_path, "w") as f:
+            json.dump(memory_processed, f)
+
+    def build(self, save_path:str = ""):
+        try:
+            self._update_memory(self.memory_nodes_dict, self.memory_raw)
+        except Exception as e:
+            print(f"Error: {e}")
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt")
+            
+        self._save(save_path=save_path)
+
+        

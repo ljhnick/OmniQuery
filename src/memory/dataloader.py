@@ -28,6 +28,7 @@ class MemoryDataLoader():
                 filepath = os.path.join(self.memory_path, file)
                 media_type = 'video'
                 # sample a few images from the video
+                continue
 
 
             local_dict = {}
