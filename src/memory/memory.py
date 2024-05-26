@@ -1,57 +1,116 @@
 import os
 import json
 from tqdm import tqdm
+from collections import defaultdict
+import random
 
 from src.memory.nodes import MemoryNodesBuilder, MemoryNodeSingle
 from src.parser.llm import OpenAIWrapper
+
+from utils.exif_utils import read_metadata_from_image
 
 
 class MemoryBuilder():
     def __init__(self,
                  memory_processed,
                  memory_raw,
+                 images_embedding_store:str = "",
                  events_embedding_store:str = "",
-                 semantic_knowledge_embedding_store:str = ""):
+                 semantic_knowledge_embedding_store:str = "",
+                 is_force_generate:bool = False) -> None:
         self.memory_raw = memory_raw
-        self.memory_nodes_dict = memory_processed['nodes'] if 'nodes' in memory_processed else {}
-        self.events = memory_processed['events'] if 'events' in memory_processed else {}
-        self.event_dict = memory_processed['event_dict'] if 'event_dict' in memory_processed else {}
+        # self.memory_nodes_dict = memory_processed['nodes'] if 'nodes' in memory_processed else {}
+        self.processed = memory_processed
+        self.memory_dict = memory_processed['memories'] if 'memories' in memory_processed else {}
+        # self.events = memory_processed['events'] if 'events' in memory_processed else {}
+        # self.event_dict = memory_processed['event_dict'] if 'event_dict' in memory_processed else {}
         self.semantic_knowledge = memory_processed['semantic_knowledge'] if 'semantic_knowledge' in memory_processed else {}
 
-
-        self.events_embedding_store_path = events_embedding_store
-        self.semantic_knowledge_embedding_store_path = semantic_knowledge_embedding_store
-        if os.path.exists(events_embedding_store) == False:
-            self.events_embedding_store = {}
+        self.images_embedding_store_path = images_embedding_store
+        if os.path.exists(images_embedding_store) == False:
+            self.images_embedding_store = {}
         else:
-            with open(events_embedding_store, "r") as f:
-                self.events_embedding_store = json.load(f)
+            with open(images_embedding_store, "r") as f:
+                self.images_embedding_store = json.load(f)
+        # self.events_embedding_store_path = events_embedding_store
+        # self.semantic_knowledge_embedding_store_path = semantic_knowledge_embedding_store
+        # if os.path.exists(events_embedding_store) == False:
+        #     self.events_embedding_store = {}
+        # else:
+        #     with open(events_embedding_store, "r") as f:
+        #         self.events_embedding_store = json.load(f)
 
-        if os.path.exists(semantic_knowledge_embedding_store) == False:
-            self.semantic_knowledge_embedding_store = {}
-        else:
-            with open(semantic_knowledge_embedding_store, "r") as f:
-                self.semantic_knowledge_embedding_store = json.load(f)
+        # if os.path.exists(semantic_knowledge_embedding_store) == False:
+        #     self.semantic_knowledge_embedding_store = {}
+        # else:
+        #     with open(semantic_knowledge_embedding_store, "r") as f:
+        #         self.semantic_knowledge_embedding_store = json.load(f)
 
         self.llm = OpenAIWrapper()
+        self.is_force_generate = is_force_generate
 
-    def _update_memory(self, memory_nodes_dict, memory_raw):
+    def _update_memory(self):
         # check if the memory is processed and saved in the json
         # load all the file in the memory container
 
         # convert json to memory nodes
-        memory_nodes_builder = MemoryNodesBuilder(memory_nodes_dict=memory_nodes_dict)
-        memory_nodes = memory_nodes_builder.get_nodes()
-        self.memory_nodes = memory_nodes
+        # create nodes for every memory file
 
-        print("Start building memory nodes...")
-        for memory_filename in tqdm(memory_raw):
-            all_filenames = [node['filename'] for node in memory_nodes_dict]
-            if memory_filename not in all_filenames:
-                # this step build an insular memory node, this node is not connected to other node yet.
-                new_node = self._build_memory_node(memory_raw[memory_filename])
-                # connect the new node with the existing memory
-                self._connect_memory_node(memory_nodes, new_node)
+        self.all_memory_nodes = []
+        for memory_filename in self.memory_raw:
+            if memory_filename in self.memory_dict:
+                # params include: 'filepath', 'actual media', 'metadata', 'content'
+                raw_info = self.memory_raw[memory_filename]
+                memory_node = MemoryNodeSingle(raw_info=raw_info, processed_info=self.memory_dict[memory_filename])
+            else:
+                memory_node = MemoryNodeSingle(raw_info=self.memory_raw[memory_filename], processed_info={})
+            
+            self.all_memory_nodes.append(memory_node)
+
+        print("Start getting metadata... and sorting by date...")
+        for memory_node in tqdm(self.all_memory_nodes):
+            memory_node.get_metadata(self.is_force_generate)   
+        self.all_memory_nodes = sorted(self.all_memory_nodes, key=lambda x: x.date)
+
+        # generate image embeddings for the memory
+        print("Start grouping similar image content...")
+        for memory_node in tqdm(self.all_memory_nodes[:]):
+            # if memory_node.filename not in self.images_embedding_store:
+            image_embeddings = memory_node.get_image_embeddings(self.images_embedding_store)
+            self.images_embedding_store[memory_node.filename] = image_embeddings
+        # save the image embeddings
+        with open(self.images_embedding_store_path, "w") as f:
+            json.dump(self.images_embedding_store, f)
+
+        nodes_grouped_by_date = defaultdict(list)
+        for memory_node in self.all_memory_nodes:
+            date_key = memory_node.date.date()
+            nodes_grouped_by_date[date_key].append(memory_node)
+
+        for date, nodes in nodes_grouped_by_date.items():
+            random.seed(529)
+            # random.shuffle(nodes)
+            for node in nodes:
+                node.group_with_similar_images(nodes)
+
+        # generate content
+        for memory_node in tqdm(self.all_memory_nodes[:]):
+            memory_node.get_content()
+
+        # self._save()
+
+        # memory_nodes_builder = MemoryNodesBuilder(memory_nodes_dict=memory_nodes_dict)
+        # memory_nodes = memory_nodes_builder.get_nodes()
+        # self.memory_nodes = memory_nodes
+
+        # print("Start building memory nodes...")
+        # for memory_filename in tqdm(memory_raw):
+        #     all_filenames = [node['filename'] for node in memory_nodes_dict]
+        #     if memory_filename not in all_filenames:
+        #         # this step build an insular memory node, this node is not connected to other node yet.
+        #         new_node = self._build_memory_node(memory_raw[memory_filename])
+        #         # connect the new node with the existing memory
+        #         self._connect_memory_node(memory_nodes, new_node)
 
     def _build_memory_node(self, memory_file_dict):
         new_node = MemoryNodeSingle(params=memory_file_dict, is_build=True)
@@ -132,34 +191,45 @@ class MemoryBuilder():
 
         return
     
-    def _save(self, save_path=""):
+    def _save(self):
         # save stores
-        with open(self.events_embedding_store_path, "w") as f:
-            json.dump(self.events_embedding_store, f)
-        with open(self.semantic_knowledge_embedding_store_path, "w") as f:
-            json.dump(self.semantic_knowledge_embedding_store, f)
+        # with open(self.events_embedding_store_path, "w") as f:
+        #     json.dump(self.events_embedding_store, f)
+        # with open(self.semantic_knowledge_embedding_store_path, "w") as f:
+        #     json.dump(self.semantic_knowledge_embedding_store, f)
+        if self._save_path == "":
+            raise ValueError("Save path is not defined")
+        
+        memories = {}
+        
+        for node in self.all_memory_nodes:
+            node_dict = node.export_dict()
+            memories[node.filename] = node_dict
 
-        memory_processed = {}
-        nodes_list = []
-        for node in self.memory_nodes:
-            node_dict = node.get_dict()
-            nodes_list.append(node_dict)
+        self.processed['memories'] = memories
 
-        memory_processed['nodes'] = nodes_list
-        memory_processed['events'] = self.events
-        memory_processed['semantic_knowledge'] = self.semantic_knowledge
+        # nodes_list = []
+        # for node in self.memory_nodes:
+        #     node_dict = node.get_dict()
+        #     nodes_list.append(node_dict)
 
-        with open(save_path, "w") as f:
-            json.dump(memory_processed, f)
+        # memory_processed['nodes'] = nodes_list
+        # memory_processed['events'] = self.events
+        # memory_processed['semantic_knowledge'] = self.semantic_knowledge
+
+        with open(self._save_path, "w") as f:
+            json.dump(self.processed, f)
 
     def build(self, save_path:str = ""):
+        self._save_path = save_path
+        # self._process_metadata()
         try:
-            self._update_memory(self.memory_nodes_dict, self.memory_raw)
+            self._update_memory()
         except Exception as e:
             print(f"Error: {e}")
         except KeyboardInterrupt:
             print("KeyboardInterrupt")
             
-        self._save(save_path=save_path)
+        self._save()
 
         

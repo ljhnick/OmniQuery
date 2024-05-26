@@ -110,11 +110,23 @@ def read_metadata_from_image(image, filepath=""):
     except:
         exif_info = image.getexif()
     exif = {ExifTags.TAGS.get(k, k): v for k, v in exif_info.items()}
+    # print(exif)
     
     if 'GPSInfo' in exif:
         gps_data = read_GPS_from_image(image)
+        capture_method = 'photo'
     else:
         gps_data = {}
+
+        if 'UserComment' in exif:
+            user_comment = exif['UserComment']
+            if 'Screenshot' in user_comment.decode('utf-8'):
+                capture_method = 'screenshot'
+        else:
+            capture_method = 'unknown'
+        
+
+    
 
     if 'DateTimeOriginal' in exif or 'DateTime' in exif:
         temporal_data = parse_date_time(exif)
@@ -124,7 +136,8 @@ def read_metadata_from_image(image, filepath=""):
     
     metadata = {
         'temporal_info': temporal_data,
-        'location': gps_data
+        'location': gps_data,
+        'capture_method': capture_method,
     }
     
     return metadata

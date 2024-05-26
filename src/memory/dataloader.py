@@ -3,6 +3,8 @@ from PIL import Image
 from pillow_heif import register_heif_opener
 register_heif_opener()
 
+from utils.exif_utils import read_metadata_from_image
+
 
 class MemoryDataLoader():
     img_ext_list = ["jpg", "jpeg", "png", "heic"]

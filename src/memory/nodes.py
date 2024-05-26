@@ -1,8 +1,39 @@
 import uuid
+import datetime
+
+from transformers import CLIPProcessor, CLIPModel, CLIPTokenizer, CLIPTextModel
+from sklearn.metrics.pairwise import cosine_similarity
+import torch
 
 from utils.exif_utils import read_metadata_from_image
 from src.parser.llm import OpenAIWrapper
 from src.parser.ocr import detect_text
+
+def get_model_info(model_ID, device):
+    model = CLIPModel.from_pretrained(model_ID).to(device)
+ 	# Get the processor
+    processor = CLIPProcessor.from_pretrained(model_ID)
+    tokenizer = CLIPTokenizer.from_pretrained(model_ID)
+    text_model = CLIPTextModel.from_pretrained(model_ID).to(device)
+    return model, processor, tokenizer, text_model
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+model_ID = "openai/clip-vit-base-patch32"
+model, processor, tokenizer, text_model = get_model_info(model_ID, device)
+
+class MemoryBuilderJson():
+    def __init__(self,
+                 memory_path) -> None:
+        pass
+
+class MemoryBuilderSingle():
+    def __init__(self) -> None:
+        self.multimodal_llm = OpenAIWrapper()
+    
+    def build_memory_dict(self, raw_memory_dict):
+        memory_dict = {}
+        memory_dict['nodes'] = self._build_memory_nodes(raw_memory_dict)
+        return memory_dict
 
 class MemoryNodesBuilder():
     def __init__(self,
@@ -24,6 +55,154 @@ class MemoryNodesBuilder():
         return self.node_list
 
 class MemoryNodeSingle():
+    def __init__(self,
+                 raw_info,
+                 processed_info) -> None:
+        self.raw_info = raw_info
+        self.processed_info = processed_info
+
+        self.multimodal_llm = OpenAIWrapper()
+        self.cost = 0
+
+        self._load()
+        self._load_knowledge()
+
+    def _load(self):
+        self.filename = self.raw_info['filename']
+        self.filepath = self.raw_info['filepath']
+        self.media_type = self.raw_info['media_type']
+        self.media = self.raw_info['media']
+
+        self.processed_grouping = False
+        self.has_parent = False
+
+        if 'has_parent' in self.processed_info:
+            if self.processed_info['has_parent'] == True:
+                self.has_parent = True
+                self.parent_node_name = self.processed_info['parent_node_name']
+
+        if 'metadata' in self.processed_info:
+            self.metadata = self.processed_info['metadata']
+        if 'content' in self.processed_info:
+            self.content = self.processed_info['content']
+        if 'events' in self.processed_info:
+            self.events = self.processed_info['events']
+        if 'semantic_knowledge' in self.processed_info:
+            self.semantic_knowledge = self.processed_info['semantic_knowledge']
+
+    def _load_knowledge(self):
+        return
+
+        
+
+    def get_timestamp(self):
+        if self.metadata is None:
+            self._get_metadata()
+        date = self.date
+        return date
+
+    def _get_metadata(self, forced_generation=False):
+        if not hasattr(self, 'metadata') or forced_generation:
+            metadata = read_metadata_from_image(self.media, self.filepath)
+            self.metadata = metadata
+        date = self.metadata['temporal_info']['date_string']
+        date = datetime.datetime.strptime(date, "%Y:%m:%d %H:%M:%S")
+        self.date = date
+        return self.metadata
+
+    def get_metadata(self, forced_generation=False):
+        return self._get_metadata(forced_generation)
+    
+    def _get_image_embeddings(self):
+        image = processor(
+            text = None,
+            images = self.media,
+            return_tensors="pt"
+            )["pixel_values"].to(device)
+        
+        embedding = model.get_image_features(image)
+        embedding_as_np = embedding.cpu().detach().numpy()
+        embedding_as_np = embedding_as_np.tolist()
+        self.image_embeddings = embedding_as_np
+        return embedding_as_np
+
+    def get_image_embeddings(self, image_embedding_store={}):
+        self.image_embedding_store = image_embedding_store
+        if self.filename in self.image_embedding_store:
+            self.image_embeddings = self.image_embedding_store[self.filename]
+        else:
+            self._get_image_embeddings()
+        return self.image_embeddings
+        
+    def group_with_similar_images(self, other_nodes):
+        if self.processed_grouping == True:
+            return
+        for node in other_nodes:
+            if node == self:
+                break
+            if node.has_parent == True:
+                continue
+
+            similarity = cosine_similarity(self.image_embeddings, node.image_embeddings)
+            if self.metadata['capture_method'] == 'photo':
+                threshold = 0.85
+            else:
+                threshold = 0.95
+            if similarity[0][0] > threshold:
+                self.has_parent = True
+                self.parent_node_name = node.filename
+                break
+        self.processed_grouping = True
+    
+    def _get_content(self):
+        if self.has_parent == True:
+            return None
+        image = self.media
+        if image.mode == 'RGBA':
+            image = image.convert('RGB')
+        visual_content, cost = self.multimodal_llm.generate_visual_content(image)
+        text = detect_text(image)
+        self.cost += cost
+        content = {
+            'caption': visual_content['caption'],
+            'objects': visual_content['objects'],
+            'people': visual_content['people'],
+            'text': text
+        }
+        return content
+            
+    
+    def get_content(self, image_embedding_store={}):
+        if hasattr(self, 'content'):
+            if self.content is not None:
+                return
+        content = self._get_content()
+        self.content = content
+    
+    def export_dict(self, path=""):
+        memory = {}
+        memory['filename'] = self.filename
+        memory['filepath'] = self.filepath
+        memory['media_type'] = self.media_type
+        
+        if hasattr(self, 'metadata'):
+            memory['metadata'] = self.metadata
+
+        if self.has_parent == True:
+            memory['has_parent'] = True
+            memory['parent_node_name'] = self.parent_node_name
+        else:
+            memory['has_parent'] = False
+
+        if hasattr(self, 'content'):
+            memory['content'] = self.content
+        if hasattr(self, 'events'):
+            memory['events'] = self.events
+        if hasattr(self, 'semantic_knowledge'):
+            memory['semantic_knowledge'] = self.semantic_knowledge
+        return memory
+
+class MemoryNodeSingleOld():
     def __init__(self,
                  params: dict = {},
                  is_build: bool = False) -> None:
