@@ -85,16 +85,25 @@ class MemoryNodeSingle():
             self.metadata = self.processed_info['metadata']
         if 'content' in self.processed_info:
             self.content = self.processed_info['content']
+        
+
+    def _load_knowledge(self):
+        # self.is_processed_event = False
+        # self.is_processed_activity = False
+        # self.is_processed_general_knowledge = False
+
+        self.is_processed_event = self.processed_info['is_processed_event'] if 'is_processed_event' in self.processed_info else False
+        self.is_processed_activity = self.processed_info['is_processed_activity'] if 'is_processed_activity' in self.processed_info else False
+        self.is_processed_general_knowledge = self.processed_info['is_processed_general_knowledge'] if 'is_processed_general_knowledge' in self.processed_info else False
+
         if 'events' in self.processed_info:
             self.events = self.processed_info['events']
         if 'semantic_knowledge' in self.processed_info:
             self.semantic_knowledge = self.processed_info['semantic_knowledge']
 
-    def _load_knowledge(self):
-        return
-
+        self.activity = self.processed_info['activity'] if 'activity' in self.processed_info else None
+        self.knowledge = self.processed_info['knowledge'] if 'knowledge' in self.processed_info else None
         
-
     def get_timestamp(self):
         if self.metadata is None:
             self._get_metadata()
@@ -194,13 +203,38 @@ class MemoryNodeSingle():
         else:
             memory['has_parent'] = False
 
+        memory['is_processed_event'] = self.is_processed_event
+        memory['is_processed_activity'] = self.is_processed_activity
+        memory['is_processed_general_knowledge'] = self.is_processed_general_knowledge
+
+        memory['activity'] = self.activity if hasattr(self, 'activity') else None
+        memory['knowledge'] = self.knowledge if hasattr(self, 'knowledge') else None
+
         if hasattr(self, 'content'):
             memory['content'] = self.content
         if hasattr(self, 'events'):
             memory['events'] = self.events
         if hasattr(self, 'semantic_knowledge'):
+            self.semantic_knowledge['is_processed_event'] = self.is_processed_event
+            self.semantic_knowledge['is_processed_activity'] = self.is_processed_activity
+            self.semantic_knowledge['is_processed_general_knowledge'] = self.is_processed_general_knowledge
             memory['semantic_knowledge'] = self.semantic_knowledge
         return memory
+    
+    def textualize_memory(self):
+        output = ""
+        time = self.metadata['temporal_info']
+        location = self.metadata['location']['address'] if 'address' in self.metadata['location'] else "Unknown"
+        capture_method = self.metadata['capture_method']
+        content = self.content
+
+        output += f"Captured time: {time}\n"
+        output += f"Captured location: {location}\n"
+        output += f"Capture method: {capture_method}\n"
+        output += f"Content:\n"
+        for key, value in content.items():
+            output += f"{key}: {value}\n"
+        return output
 
 class MemoryNodeSingleOld():
     def __init__(self,
