@@ -4,7 +4,8 @@ from flask_cors import CORS
 import pyrootutils
 pyrootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-from main_web import initialize, retrieve
+# from legacy_code.main_web import initialize, retrieve
+from pipeline import *
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"

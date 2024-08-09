@@ -1,0 +1,14 @@
+exif==1.6.0
+Flask==3.0.3
+Flask_Cors==4.0.1
+geopy==2.4.1
+numpy==2.0.1
+openai==1.40.1
+Pillow==10.4.0
+pillow_heif==0.16.0
+protobuf==5.27.3
+pyrootutils==1.0.4
+scikit_learn==1.5.1
+torch==2.2.2
+tqdm==4.66.4
+transformers==4.41.1
